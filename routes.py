@@ -10,8 +10,8 @@ from typing import Dict, Any, Optional
 from flask import request, jsonify, render_template, redirect, url_for, flash
 from app import app, limiter, db
 from models import ApiKey, ApiLog, TelegramCache, DownloadHistory
-from telegram_bot import telegram_storage
-from youtube_api import youtube_extractor
+from telegram_bot_sync import telegram_storage_sync
+from youtube_api_sync import youtube_extractor_sync
 from search import query_matcher
 from utils import (
     validate_query, cleanup_temp_file, generate_api_key, 
@@ -83,7 +83,7 @@ def admin_panel():
 @app.route('/api/v1/extract', methods=['GET', 'POST'])
 @limiter.limit("50 per minute")
 @require_api_key
-async def extract_media():
+def extract_media():
     """Main endpoint for media extraction"""
     start_time = time.time()
     
@@ -150,8 +150,7 @@ async def extract_media():
                 })
         
         # If not cached or force download, extract from YouTube
-        async with youtube_extractor as extractor:
-            extraction_result = await extractor.extract_media(query, format_type)
+        extraction_result = youtube_extractor_sync.extract_media(query, format_type)
         
         if not extraction_result:
             return jsonify({
@@ -160,9 +159,11 @@ async def extract_media():
             }), 404
         
         # Upload to Telegram for caching
-        upload_result = await telegram_storage.upload_media(
+        media_info_with_query = extraction_result.copy()
+        media_info_with_query['original_query'] = query
+        upload_result = telegram_storage_sync.upload_media(
             extraction_result['file_path'],
-            extraction_result
+            media_info_with_query
         )
         
         # Cleanup temporary file

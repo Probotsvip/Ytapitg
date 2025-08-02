@@ -25,7 +25,7 @@ class ApiKey(db.Model):
     
     def remaining_requests(self):
         now = datetime.datetime.now()
-        if now > self.reset_at:
+        if self.reset_at is None or now > self.reset_at:
             return self.daily_limit
         return max(0, self.daily_limit - self.count)
 
