@@ -261,7 +261,14 @@
                 
                 row.innerHTML = `
                     <td>${key.name}</td>
-                    <td><code>${key.key}</code></td>
+                    <td>
+                        <code id="key-${key.id}" style="cursor: pointer;" onclick="copyApiKey('${key.key}', ${key.id})" title="Click to copy full key">
+                            ${key.key}
+                        </code>
+                        <button class="btn btn-sm btn-outline-light ms-2" onclick="copyApiKey('${key.key}', ${key.id})" title="Copy API Key">
+                            <i class="fas fa-copy"></i>
+                        </button>
+                    </td>
                     <td><span class="badge ${typeClass}">${typeText}</span></td>
                     <td>${new Date(key.created_at).toLocaleDateString()}</td>
                     <td>${new Date(key.valid_until).toLocaleDateString()}</td>
@@ -303,7 +310,7 @@
 
                 if (response.ok) {
                     const data = await response.json();
-                    showMessage('Success', `API Key created successfully: ${data.key.key}`, 'success');
+                    showApiKeyCreated(data.key);
                     
                     // Clear form
                     document.getElementById('keyName').value = '';
@@ -343,6 +350,99 @@
                 }
             } catch (error) {
                 showMessage('Error', 'Failed to delete API key', 'danger');
+            }
+        }
+
+        // Copy API Key function
+        async function copyApiKey(apiKey, keyId) {
+            try {
+                await navigator.clipboard.writeText(apiKey);
+                
+                // Show visual feedback
+                const button = document.querySelector(`[onclick*="copyApiKey('${apiKey}', ${keyId})"]`);
+                const originalIcon = button.innerHTML;
+                button.innerHTML = '<i class="fas fa-check text-success"></i>';
+                button.classList.add('text-success');
+                
+                setTimeout(() => {
+                    button.innerHTML = originalIcon;
+                    button.classList.remove('text-success');
+                }, 2000);
+                
+                showMessage('Success', 'API Key copied to clipboard!', 'success');
+            } catch (err) {
+                // Fallback for older browsers
+                const textArea = document.createElement('textarea');
+                textArea.value = apiKey;
+                document.body.appendChild(textArea);
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+                
+                showMessage('Success', 'API Key copied to clipboard!', 'success');
+            }
+        }
+
+        // Show API Key Created Modal with copy option
+        function showApiKeyCreated(keyData) {
+            const modal = new bootstrap.Modal(document.getElementById('messageModal'));
+            document.getElementById('messageModalTitle').textContent = 'API Key Created Successfully';
+            document.getElementById('messageModalBody').innerHTML = `
+                <div class="alert alert-success">
+                    <h6><i class="fas fa-check-circle"></i> New API Key Created</h6>
+                    <hr>
+                    <p><strong>Name:</strong> ${keyData.name}</p>
+                    <p><strong>Key:</strong></p>
+                    <div class="input-group mb-3">
+                        <input type="text" class="form-control" id="newApiKey" value="${keyData.key}" readonly>
+                        <button class="btn btn-outline-primary" type="button" onclick="copyNewApiKey()">
+                            <i class="fas fa-copy"></i> Copy
+                        </button>
+                    </div>
+                    <p><strong>Valid Until:</strong> ${new Date(keyData.valid_until).toLocaleDateString()}</p>
+                    <p><strong>Daily Limit:</strong> ${keyData.daily_limit} requests</p>
+                    <div class="alert alert-warning mt-3">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <strong>Important:</strong> Please copy this API key now. You won't be able to see the full key again.
+                    </div>
+                </div>
+            `;
+            modal.show();
+        }
+
+        // Copy new API key from modal
+        async function copyNewApiKey() {
+            const keyInput = document.getElementById('newApiKey');
+            try {
+                await navigator.clipboard.writeText(keyInput.value);
+                
+                const button = event.target.closest('button');
+                const originalText = button.innerHTML;
+                button.innerHTML = '<i class="fas fa-check"></i> Copied!';
+                button.classList.remove('btn-outline-primary');
+                button.classList.add('btn-success');
+                
+                setTimeout(() => {
+                    button.innerHTML = originalText;
+                    button.classList.remove('btn-success');
+                    button.classList.add('btn-outline-primary');
+                }, 2000);
+                
+            } catch (err) {
+                keyInput.select();
+                document.execCommand('copy');
+                
+                const button = event.target.closest('button');
+                const originalText = button.innerHTML;
+                button.innerHTML = '<i class="fas fa-check"></i> Copied!';
+                button.classList.remove('btn-outline-primary');
+                button.classList.add('btn-success');
+                
+                setTimeout(() => {
+                    button.innerHTML = originalText;
+                    button.classList.remove('btn-success');
+                    button.classList.add('btn-outline-primary');
+                }, 2000);
             }
         }
 
