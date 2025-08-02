@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Panel - YouTube Media API</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container-fluid">
+        <!-- Header -->
+        <div class="header">
+            <div class="container">
+                <i class="fas fa-tools logo"></i>
+                <h1 class="display-4 fw-bold">Admin Panel</h1>
+                <p class="lead">Manage API keys and monitor system usage</p>
+            </div>
+        </div>
+
+        <div class="container">
+            <!-- Admin API Key Input -->
+            <div class="alert alert-warning" id="authAlert">
+                <h5><i class="fas fa-key"></i> Admin Authentication Required</h5>
+                <div class="row">
+                    <div class="col-md-6">
+                        <input type="password" class="form-control" id="adminApiKey" placeholder="Enter admin API key">
+                    </div>
+                    <div class="col-md-3">
+                        <button class="btn btn-primary" onclick="authenticate()">
+                            <i class="fas fa-sign-in-alt"></i> Authenticate
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Admin Content -->
+            <div id="adminContent" style="display: none;">
+                
+                <!-- Statistics Dashboard -->
+                <div class="row mb-4">
+                    <div class="col-md-3">
+                        <div class="stat-card">
+                            <div class="stat-icon">
+                                <i class="fas fa-key"></i>
+                            </div>
+                            <div class="stat-content">
+                                <h3 id="totalKeys">-</h3>
+                                <p>Total API Keys</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="stat-card">
+                            <div class="stat-icon">
+                                <i class="fas fa-download"></i>
+                            </div>
+                            <div class="stat-content">
+                                <h3 id="totalDownloads">-</h3>
+                                <p>Total Downloads</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="stat-card">
+                            <div class="stat-icon">
+                                <i class="fas fa-database"></i>
+                            </div>
+                            <div class="stat-content">
+                                <h3 id="cachedItems">-</h3>
+                                <p>Cached Items</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="stat-card">
+                            <div class="stat-icon">
+                                <i class="fas fa-calendar-day"></i>
+                            </div>
+                            <div class="stat-content">
+                                <h3 id="todayDownloads">-</h3>
+                                <p>Today's Downloads</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- API Key Management -->
+                <div class="endpoint">
+                    <h2><i class="fas fa-key"></i> API Key Management</h2>
+                    
+                    <!-- Create New Key Form -->
+                    <div class="row mb-4">
+                        <div class="col-md-8">
+                            <h5>Create New API Key</h5>
+                            <div class="row">
+                                <div class="col-md-3">
+                                    <input type="text" class="form-control mb-2" id="keyName" placeholder="Key Name">
+                                </div>
+                                <div class="col-md-2">
+                                    <input type="number" class="form-control mb-2" id="daysValid" value="30" placeholder="Days Valid">
+                                </div>
+                                <div class="col-md-2">
+                                    <input type="number" class="form-control mb-2" id="dailyLimit" value="100" placeholder="Daily Limit">
+                                </div>
+                                <div class="col-md-2">
+                                    <div class="form-check mt-2">
+                                        <input class="form-check-input" type="checkbox" id="isAdmin">
+                                        <label class="form-check-label" for="isAdmin">
+                                            Admin
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <button class="btn btn-success" onclick="createApiKey()">
+                                        <i class="fas fa-plus"></i> Create Key
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- API Keys Table -->
+                    <div class="table-responsive">
+                        <table class="table table-dark table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Key</th>
+                                    <th>Type</th>
+                                    <th>Created</th>
+                                    <th>Expires</th>
+                                    <th>Usage</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="apiKeysTable">
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Popular Queries -->
+                <div class="endpoint mt-4">
+                    <h2><i class="fas fa-chart-line"></i> Popular Queries</h2>
+                    <div class="table-responsive">
+                        <table class="table table-dark table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Query</th>
+                                    <th>Access Count</th>
+                                </tr>
+                            </thead>
+                            <tbody id="popularQueriesTable">
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Success/Error Modals -->
+    <div class="modal fade" id="messageModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content bg-dark">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="messageModalTitle">Message</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="messageModalBody">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let adminApiKey = '';
+
+        function authenticate() {
+            adminApiKey = document.getElementById('adminApiKey').value;
+            if (adminApiKey) {
+                loadDashboard();
+            } else {
+                showMessage('Error', 'Please enter admin API key', 'danger');
+            }
+        }
+
+        async function loadDashboard() {
+            try {
+                // Load statistics
+                const statsResponse = await fetch('/api/v1/admin/stats', {
+                    headers: { 'X-API-Key': adminApiKey }
+                });
+
+                if (statsResponse.ok) {
+                    const stats = await statsResponse.json();
+                    updateStats(stats.stats);
+                    
+                    // Hide auth alert and show content
+                    document.getElementById('authAlert').style.display = 'none';
+                    document.getElementById('adminContent').style.display = 'block';
+                    
+                    // Load API keys and popular queries
+                    loadApiKeys();
+                } else {
+                    showMessage('Error', 'Invalid admin API key', 'danger');
+                }
+            } catch (error) {
+                showMessage('Error', 'Failed to load dashboard', 'danger');
+            }
+        }
+
+        function updateStats(stats) {
+            document.getElementById('totalKeys').textContent = stats.api_keys.total;
+            document.getElementById('totalDownloads').textContent = stats.downloads.total;
+            document.getElementById('cachedItems').textContent = stats.cache.total_items;
+            document.getElementById('todayDownloads').textContent = stats.downloads.today;
+            
+            // Update popular queries
+            const popularQueriesTable = document.getElementById('popularQueriesTable');
+            popularQueriesTable.innerHTML = '';
+            
+            stats.popular_queries.forEach(item => {
+                const row = popularQueriesTable.insertRow();
+                row.innerHTML = `
+                    <td>${item.query}</td>
+                    <td><span class="badge bg-primary">${item.count}</span></td>
+                `;
+            });
+        }
+
+        async function loadApiKeys() {
+            try {
+                const response = await fetch('/api/v1/admin/keys', {
+                    headers: { 'X-API-Key': adminApiKey }
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    updateApiKeysTable(data.keys);
+                }
+            } catch (error) {
+                console.error('Failed to load API keys:', error);
+            }
+        }
+
+        function updateApiKeysTable(keys) {
+            const table = document.getElementById('apiKeysTable');
+            table.innerHTML = '';
+            
+            keys.forEach(key => {
+                const row = table.insertRow();
+                const typeClass = key.is_admin ? 'bg-danger' : 'bg-primary';
+                const typeText = key.is_admin ? 'Admin' : 'User';
+                
+                row.innerHTML = `
+                    <td>${key.name}</td>
+                    <td><code>${key.key}</code></td>
+                    <td><span class="badge ${typeClass}">${typeText}</span></td>
+                    <td>${new Date(key.created_at).toLocaleDateString()}</td>
+                    <td>${new Date(key.valid_until).toLocaleDateString()}</td>
+                    <td>${key.current_count}/${key.daily_limit} (${key.remaining_requests} left)</td>
+                    <td>
+                        <button class="btn btn-sm btn-danger" onclick="deleteApiKey(${key.id})">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    </td>
+                `;
+            });
+        }
+
+        async function createApiKey() {
+            const name = document.getElementById('keyName').value;
+            const daysValid = parseInt(document.getElementById('daysValid').value);
+            const dailyLimit = parseInt(document.getElementById('dailyLimit').value);
+            const isAdmin = document.getElementById('isAdmin').checked;
+
+            if (!name) {
+                showMessage('Error', 'Please enter a key name', 'danger');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/v1/admin/keys', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': adminApiKey
+                    },
+                    body: JSON.stringify({
+                        name: name,
+                        days_valid: daysValid,
+                        daily_limit: dailyLimit,
+                        is_admin: isAdmin
+                    })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    showMessage('Success', `API Key created successfully: ${data.key.key}`, 'success');
+                    
+                    // Clear form
+                    document.getElementById('keyName').value = '';
+                    document.getElementById('daysValid').value = '30';
+                    document.getElementById('dailyLimit').value = '100';
+                    document.getElementById('isAdmin').checked = false;
+                    
+                    // Reload keys
+                    loadApiKeys();
+                    loadDashboard();
+                } else {
+                    const error = await response.json();
+                    showMessage('Error', error.error, 'danger');
+                }
+            } catch (error) {
+                showMessage('Error', 'Failed to create API key', 'danger');
+            }
+        }
+
+        async function deleteApiKey(keyId) {
+            if (!confirm('Are you sure you want to delete this API key?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/v1/admin/keys/${keyId}`, {
+                    method: 'DELETE',
+                    headers: { 'X-API-Key': adminApiKey }
+                });
+
+                if (response.ok) {
+                    showMessage('Success', 'API key deleted successfully', 'success');
+                    loadApiKeys();
+                    loadDashboard();
+                } else {
+                    showMessage('Error', 'Failed to delete API key', 'danger');
+                }
+            } catch (error) {
+                showMessage('Error', 'Failed to delete API key', 'danger');
+            }
+        }
+
+        function showMessage(title, message, type) {
+            const modal = new bootstrap.Modal(document.getElementById('messageModal'));
+            document.getElementById('messageModalTitle').textContent = title;
+            document.getElementById('messageModalBody').innerHTML = `
+                <div class="alert alert-${type}">
+                    ${message}
+                </div>
+            `;
+            modal.show();
+        }
+
+        // Auto-refresh every 30 seconds if authenticated
+        setInterval(() => {
+            if (adminApiKey && document.getElementById('adminContent').style.display !== 'none') {
+                loadDashboard();
+            }
+        }, 30000);
+    </script>
+</body>
+</html>
