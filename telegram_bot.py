@@ -3,14 +3,16 @@ import hashlib
 import logging
 import os
 import time
+from datetime import datetime
 from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse
 
+import requests
 import httpx
 
 from config import (
     TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, MAX_AUDIO_SIZE, 
-    MAX_VIDEO_SIZE, MAX_DOCUMENT_SIZE
+    MAX_VIDEO_SIZE, MAX_DOCUMENT_SIZE, MAX_CACHE_AGE
 )
 from models import TelegramCache, db
 from utils import sanitize_filename, format_duration
@@ -19,12 +21,13 @@ logger = logging.getLogger(__name__)
 
 class TelegramStorage:
     def __init__(self):
-        self.bot = None  # Temporarily disabled due to library conflicts
+        self.bot_token = TELEGRAM_BOT_TOKEN
         self.channel_id = TELEGRAM_CHANNEL_ID or ""
+        self.base_url = f"https://api.telegram.org/bot{self.bot_token}" if self.bot_token else None
         
     async def search_existing_media(self, query: str, youtube_id: str = None, title: str = None) -> Optional[Dict[str, Any]]:
         """Search for existing media in Telegram channel"""
-        if not self.bot:
+        if not self.base_url:
             logger.info("Telegram bot not configured - using database cache only")
             return None
             
@@ -159,153 +162,90 @@ class TelegramStorage:
     
     async def upload_media(self, file_path: str, metadata: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Upload media file to Telegram channel"""
-        if not self.bot:
-            logger.info("Telegram bot not configured - returning mock file data")
-            return {
-                'file_id': f"mock_file_{hashlib.md5(file_path.encode()).hexdigest()[:16]}",
-                'file_unique_id': f"mock_unique_{hashlib.md5(file_path.encode()).hexdigest()[:16]}",
-                'file_type': 'audio',
-                'message_id': 12345,
-                'title': metadata.get('title', 'Unknown'),
-                'duration': metadata.get('duration', ''),
-                'uploaded': False
-            }
-        
-        if not os.path.exists(file_path):
+        if not self.base_url or not os.path.exists(file_path):
             return None
         
         try:
-            file_size = os.path.getsize(file_path)
-            file_type = self._determine_file_type(file_path, file_size)
-            caption = self._build_caption(metadata)
+            # Determine file type and prepare upload
+            file_extension = os.path.splitext(file_path)[1].lower()
+            is_audio = file_extension in ['.mp3', '.m4a', '.ogg', '.wav']
             
-            async with self.bot:
-                if file_type == 'audio':
-                    message = await self.bot.send_audio(
-                        chat_id=self.channel_id,
-                        audio=open(file_path, 'rb'),
-                        caption=caption,
-                        title=metadata.get('title', 'Unknown'),
-                        performer=metadata.get('artist', 'Unknown Artist'),
-                        duration=metadata.get('duration_seconds', 0),
-                        parse_mode='HTML'
-                    )
-                    file_info = message.audio
-                    
-                elif file_type == 'video':
-                    message = await self.bot.send_video(
-                        chat_id=self.channel_id,
-                        video=open(file_path, 'rb'),
-                        caption=caption,
-                        duration=metadata.get('duration_seconds', 0),
-                        parse_mode='HTML'
-                    )
-                    file_info = message.video
-                    
-                else:  # document
-                    message = await self.bot.send_document(
-                        chat_id=self.channel_id,
-                        document=open(file_path, 'rb'),
-                        caption=caption,
-                        parse_mode='HTML'
-                    )
-                    file_info = message.document
-                
-                # Cache the uploaded file
-                await self._cache_upload_result(metadata['query'], message, file_info, file_type)
-                
-                return {
-                    'file_id': file_info.file_id,
-                    'file_unique_id': file_info.file_unique_id,
-                    'file_type': file_type,
-                    'message_id': message.message_id,
-                    'title': metadata.get('title', 'Unknown'),
-                    'duration': metadata.get('duration', ''),
-                    'uploaded': True
+            # Prepare file for upload
+            with open(file_path, 'rb') as file:
+                files = {'audio' if is_audio else 'document': file}
+                data = {
+                    'chat_id': self.channel_id,
+                    'caption': f"🎵 {metadata.get('title', 'Unknown Title')}\n⏱️ {metadata.get('duration', 'Unknown duration')}\n🔗 {metadata.get('original_url', '')}"
                 }
                 
-        except TelegramError as e:
-            logger.error(f"Telegram upload error: {e}")
-            return None
+                # Choose appropriate endpoint
+                endpoint = 'sendAudio' if is_audio else 'sendDocument'
+                url = f"{self.base_url}/{endpoint}"
+                
+                # Upload to Telegram
+                response = requests.post(url, data=data, files=files, timeout=60)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get('ok'):
+                        message = result['result']
+                        file_info = message.get('audio') or message.get('document')
+                        
+                        return {
+                            'file_id': file_info['file_id'],
+                            'file_unique_id': file_info['file_unique_id'],
+                            'file_type': 'audio' if is_audio else 'document',
+                            'message_id': message['message_id'],
+                            'title': metadata.get('title', 'Unknown'),
+                            'duration': metadata.get('duration', ''),
+                            'uploaded': True
+                        }
+                    else:
+                        logger.error(f"Telegram API error: {result}")
+                else:
+                    logger.error(f"HTTP error {response.status_code}: {response.text}")
+                    
         except Exception as e:
-            logger.error(f"Upload error: {e}")
+            logger.error(f"Error uploading to Telegram: {e}")
+        
+        return None
+    
+    async def get_file_url(self, file_id: str) -> Optional[str]:
+        """Get direct download URL for a Telegram file"""
+        if not self.base_url:
             return None
-    
-    def _determine_file_type(self, file_path: str, file_size: int) -> str:
-        """Determine the best file type for upload based on size and extension"""
-        ext = os.path.splitext(file_path)[1].lower()
-        
-        if ext in ['.mp3', '.m4a', '.ogg', '.wav'] and file_size <= MAX_AUDIO_SIZE:
-            return 'audio'
-        elif ext in ['.mp4', '.avi', '.mkv', '.webm'] and file_size <= MAX_VIDEO_SIZE:
-            return 'video'
-        else:
-            return 'document'
-    
-    def _build_caption(self, metadata: Dict[str, Any]) -> str:
-        """Build formatted caption for Telegram message"""
-        caption_parts = []
-        
-        # Query information
-        if metadata.get('query'):
-            caption_parts.append(f"🎵 <b>Query:</b> {metadata['query']}")
-        
-        # Title and artist
-        if metadata.get('title'):
-            caption_parts.append(f"🎬 <b>Title:</b> {metadata['title']}")
-        
-        # YouTube link
-        if metadata.get('youtube_url'):
-            caption_parts.append(f"🔗 <b>Link:</b> {metadata['youtube_url']}")
-        
-        # YouTube ID
-        if metadata.get('youtube_id'):
-            caption_parts.append(f"📌 <b>ID:</b> {metadata['youtube_id']}")
-        
-        # Duration
-        if metadata.get('duration'):
-            caption_parts.append(f"⏱ <b>Duration:</b> {metadata['duration']}")
-        
-        # File size
-        if metadata.get('file_size'):
-            size_mb = metadata['file_size'] / (1024 * 1024)
-            caption_parts.append(f"📦 <b>Size:</b> {size_mb:.1f} MB")
-        
-        # Source
-        if metadata.get('source'):
-            caption_parts.append(f"📁 <b>Source:</b> {metadata['source']}")
-        
-        # API info
-        caption_parts.append("📡 <b>Requested via:</b> MusicAPI")
-        
-        # Upload timestamp
-        caption_parts.append(f"🕒 <b>Uploaded:</b> {time.strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        return '\n'.join(caption_parts)
-    
-    async def _cache_upload_result(self, query: str, message, file_info, file_type: str):
-        """Cache the uploaded file result"""
+            
         try:
-            query_hash = hashlib.md5(query.lower().encode()).hexdigest()
+            # Get file info from Telegram
+            url = f"{self.base_url}/getFile"
+            response = requests.get(url, params={'file_id': file_id}, timeout=30)
             
-            cache_entry = TelegramCache(
-                query_hash=query_hash,
-                original_query=query,
-                title=getattr(file_info, 'title', query),
-                duration=str(getattr(file_info, 'duration', 0)),
-                file_id=file_info.file_id,
-                file_unique_id=file_info.file_unique_id,
-                file_type=file_type,
-                telegram_message_id=message.message_id,
-                access_count=1
-            )
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('ok'):
+                    file_path = result['result']['file_path']
+                    return f"https://api.telegram.org/file/bot{self.bot_token}/{file_path}"
+                    
+        except Exception as e:
+            logger.error(f"Error getting file URL: {e}")
             
-            db.session.add(cache_entry)
+        return None
+        
+    def cleanup_cache(self):
+        """Clean up old cache entries"""
+        try:
+            cutoff_time = time.time() - MAX_CACHE_AGE
+            cutoff_datetime = datetime.fromtimestamp(cutoff_time)
+            
+            deleted_count = db.session.query(TelegramCache).filter(
+                TelegramCache.created_at < cutoff_datetime
+            ).delete()
+            
             db.session.commit()
-            logger.info(f"Cached upload result for query: {query}")
+            logger.info(f"Cleaned up {deleted_count} old cache entries")
             
         except Exception as e:
-            logger.error(f"Error caching upload result: {e}")
+            logger.error(f"Error during cache cleanup: {e}")
             db.session.rollback()
 
 # Global instance
