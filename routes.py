@@ -7,11 +7,12 @@ import time
 from functools import wraps
 from typing import Dict, Any, Optional
 
-from flask import request, jsonify, render_template, redirect, url_for, flash
+from flask import request, jsonify, render_template, redirect, url_for, flash, send_file
 from app import app, limiter, db
 from models import ApiKey, ApiLog, TelegramCache, DownloadHistory
 from telegram_bot_sync import telegram_storage_sync
 from youtube_api_sync import youtube_extractor_sync
+from file_storage import local_storage
 from search import query_matcher
 from utils import (
     validate_query, cleanup_temp_file, generate_api_key, 
@@ -116,10 +117,30 @@ def extract_media():
                 request.remote_addr or ''
             )
         
-        # Check Telegram cache first (unless force download)
+        # Check local storage first (unless force download)
         cached_result = None
         if not force_download:
-            # Try comprehensive search
+            # Try local storage first
+            stored_media = local_storage.get_stored_media(query)
+            if stored_media:
+                processing_time = time.time() - start_time
+                return jsonify({
+                    'status': 'success',
+                    'cached': True,
+                    'source': 'local_storage',
+                    'data': {
+                        'title': stored_media['title'],
+                        'file_path': stored_media['stored_path'],
+                        'file_type': stored_media['file_type'],
+                        'duration': stored_media['duration'],
+                        'processing_time': round(processing_time, 2),
+                        'access_count': stored_media.get('access_count', 0),
+                        'download_url': f"/api/v1/download/{os.path.basename(stored_media['stored_path'])}",
+                        'query': query
+                    }
+                })
+            
+            # Fallback to comprehensive search
             search_result = query_matcher.comprehensive_search(query)
             if search_result:
                 cached_result = search_result['cache_entry']
@@ -158,22 +179,40 @@ def extract_media():
                 'error': 'Failed to extract media from YouTube'
             }), 404
         
-        # Upload to Telegram for caching
-        media_info_with_query = extraction_result.copy()
-        media_info_with_query['original_query'] = query
-        upload_result = telegram_storage_sync.upload_media(
-            extraction_result['file_path'],
-            media_info_with_query
-        )
+        # Store to Telegram AND local storage
+        upload_result = None
+        storage_result = None
         
-        # Cleanup temporary file
+        # Try Telegram upload first
+        try:
+            media_info_with_query = extraction_result.copy()
+            media_info_with_query['original_query'] = query
+            media_info_with_query['file_type'] = format_type
+            
+            upload_result = telegram_storage_sync.upload_media(
+                extraction_result['file_path'],
+                media_info_with_query
+            )
+            logger.info(f"Telegram upload successful for: {extraction_result['title']}")
+        except Exception as e:
+            logger.warning(f"Telegram upload failed: {e}")
+        
+        # Always store locally as backup
+        try:
+            media_info_with_query = extraction_result.copy()
+            media_info_with_query['original_query'] = query
+            media_info_with_query['file_type'] = format_type
+            
+            storage_result = local_storage.store_media(
+                extraction_result['file_path'],
+                media_info_with_query
+            )
+            logger.info(f"Local storage successful for: {extraction_result['title']}")
+        except Exception as e:
+            logger.error(f"Local storage failed: {e}")
+        
+        # Cleanup temp file after storing
         cleanup_temp_file(extraction_result['file_path'])
-        
-        if not upload_result:
-            return jsonify({
-                'status': 'error',
-                'error': 'Failed to upload to Telegram storage'
-            }), 500
         
         # Log download history
         try:
@@ -190,7 +229,7 @@ def extract_media():
                     duration=extraction_result.get('duration', ''),
                     source=extraction_result['source'],
                     processing_time=int(time.time() - start_time),
-                    telegram_uploaded=True
+                    telegram_uploaded=False
                 )
                 db.session.add(download_entry)
                 db.session.commit()
@@ -199,25 +238,73 @@ def extract_media():
         
         processing_time = time.time() - start_time
         
+        # Prepare response data
+        response_data = {
+            'title': extraction_result['title'],
+            'youtube_id': extraction_result.get('youtube_id', ''),
+            'youtube_url': extraction_result.get('youtube_url', ''),
+            'duration': extraction_result.get('duration', ''),
+            'file_size': extraction_result.get('file_size', 0),
+            'file_size_formatted': format_file_size(extraction_result.get('file_size', 0)),
+            'source': extraction_result['source'],
+            'processing_time': round(processing_time, 2),
+            'query': query
+        }
+        
+        # Add storage information
+        if upload_result:
+            response_data.update({
+                'file_id': upload_result['file_id'],
+                'file_unique_id': upload_result['file_unique_id'],
+                'telegram_message_id': upload_result['message_id'],
+                'cached_to_telegram': True
+            })
+        
+        if storage_result:
+            response_data.update({
+                'stored_path': storage_result['stored_path'],
+                'download_url': f"/api/v1/download/{os.path.basename(storage_result['stored_path'])}",
+                'locally_stored': True
+            })
+        
+        response_data.update({
+            'file_type': format_type,
+            'ready_for_download': bool(storage_result or upload_result)
+        })
+        
         return jsonify({
             'status': 'success',
             'cached': False,
-            'data': {
-                'title': extraction_result['title'],
-                'youtube_id': extraction_result.get('youtube_id', ''),
-                'youtube_url': extraction_result.get('youtube_url', ''),
-                'duration': extraction_result.get('duration', ''),
-                'file_id': upload_result['file_id'],
-                'file_unique_id': upload_result['file_unique_id'],
-                'file_type': upload_result['file_type'],
-                'file_size': extraction_result.get('file_size', 0),
-                'file_size_formatted': format_file_size(extraction_result.get('file_size', 0)),
-                'source': extraction_result['source'],
-                'telegram_message_id': upload_result['message_id'],
-                'processing_time': round(processing_time, 2),
-                'query': query
-            }
+            'data': response_data
         })
+        
+    except Exception as e:
+        logger.error(f"Error in extract_media: {e}")
+        return jsonify({
+            'status': 'error',
+            'error': 'Internal server error'
+        }), 500
+
+@app.route('/api/v1/download/<filename>')
+@require_api_key
+def download_file(filename):
+    """Download stored media file"""
+    try:
+        # Check in stored_media directory
+        file_path = os.path.join('stored_media', filename)
+        if os.path.exists(file_path):
+            return send_file(file_path, as_attachment=True)
+        
+        # Check in temp directory as fallback
+        temp_path = os.path.join('/tmp', filename)
+        if os.path.exists(temp_path):
+            return send_file(temp_path, as_attachment=True)
+        
+        return jsonify({'error': 'File not found'}), 404
+        
+    except Exception as e:
+        logger.error(f"Error downloading file: {e}")
+        return jsonify({'error': 'Download failed'}), 500
         
     except Exception as e:
         logger.error(f"Error in extract_media: {e}")
