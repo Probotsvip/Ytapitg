@@ -265,7 +265,7 @@ def search_cache():
 @require_admin
 def list_api_keys():
     """List all API keys (admin only)"""
-    keys = ApiKey.query.all()
+    keys = db.session.query(ApiKey).all()
     
     keys_data = []
     for key in keys:
@@ -331,7 +331,9 @@ def create_api_key():
 @require_admin
 def delete_api_key(key_id):
     """Delete API key (admin only)"""
-    api_key = ApiKey.query.get_or_404(key_id)
+    api_key = db.session.get(ApiKey, key_id)
+    if not api_key:
+        return jsonify({'error': 'API key not found'}), 404
     
     db.session.delete(api_key)
     db.session.commit()
@@ -347,16 +349,16 @@ def get_stats():
     """Get system statistics (admin only)"""
     
     # API Key stats
-    total_keys = ApiKey.query.count()
-    active_keys = ApiKey.query.filter(ApiKey.valid_until > datetime.datetime.now()).count()
+    total_keys = db.session.query(ApiKey).count()
+    active_keys = db.session.query(ApiKey).filter(ApiKey.valid_until > datetime.datetime.now()).count()
     
     # Cache stats
-    total_cached = TelegramCache.query.count()
+    total_cached = db.session.query(TelegramCache).count()
     cache_size = db.session.query(db.func.sum(TelegramCache.access_count)).scalar() or 0
     
     # Download stats
-    total_downloads = DownloadHistory.query.count()
-    today_downloads = DownloadHistory.query.filter(
+    total_downloads = db.session.query(DownloadHistory).count()
+    today_downloads = db.session.query(DownloadHistory).filter(
         DownloadHistory.created_at >= datetime.datetime.now().date()
     ).count()
     
