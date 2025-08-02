@@ -117,58 +117,14 @@ def extract_media():
                 request.remote_addr or ''
             )
         
-        # Check local storage first (unless force download)
-        cached_result = None
+        # TELEGRAM-FIRST STRATEGY: Search Telegram storage before any processing
         if not force_download:
-            # Try local storage first
-            stored_media = local_storage.get_stored_media(query)
-            if stored_media:
+            telegram_result = telegram_storage_sync.search_telegram_first(query)
+            if telegram_result:
                 processing_time = time.time() - start_time
-                return jsonify({
-                    'status': 'success',
-                    'cached': True,
-                    'source': 'local_storage',
-                    'data': {
-                        'title': stored_media['title'],
-                        'file_path': stored_media['stored_path'],
-                        'file_type': stored_media['file_type'],
-                        'duration': stored_media['duration'],
-                        'processing_time': round(processing_time, 2),
-                        'access_count': stored_media.get('access_count', 0),
-                        'download_url': f"/api/v1/download/{os.path.basename(stored_media['stored_path'])}",
-                        'query': query
-                    }
-                })
-            
-            # Fallback to comprehensive search
-            search_result = query_matcher.comprehensive_search(query)
-            if search_result:
-                cached_result = search_result['cache_entry']
-                
-                # Update access statistics
-                cached_result.access_count += 1
-                cached_result.last_accessed = datetime.datetime.now()
-                db.session.commit()
-                
-                processing_time = time.time() - start_time
-                
-                return jsonify({
-                    'status': 'success',
-                    'cached': True,
-                    'match_type': search_result['match_type'],
-                    'confidence': search_result['confidence'],
-                    'data': {
-                        'title': cached_result.title,
-                        'file_id': cached_result.file_id,
-                        'file_unique_id': cached_result.file_unique_id,
-                        'file_type': cached_result.file_type,
-                        'duration': cached_result.duration,
-                        'telegram_message_id': cached_result.telegram_message_id,
-                        'query': query,
-                        'processing_time': round(processing_time, 2),
-                        'access_count': cached_result.access_count
-                    }
-                })
+                telegram_result['data']['processing_time'] = round(processing_time, 2)
+                telegram_result['data']['query'] = query
+                return jsonify(telegram_result)
         
         # If not cached or force download, extract from YouTube
         extraction_result = youtube_extractor_sync.extract_media(query, format_type)
@@ -179,11 +135,9 @@ def extract_media():
                 'error': 'Failed to extract media from YouTube'
             }), 404
         
-        # Store to Telegram AND local storage
+        # Store ONLY to Telegram (Telegram-first architecture)
         upload_result = None
-        storage_result = None
         
-        # Try Telegram upload first
         try:
             media_info_with_query = extraction_result.copy()
             media_info_with_query['original_query'] = query
@@ -195,21 +149,7 @@ def extract_media():
             )
             logger.info(f"Telegram upload successful for: {extraction_result['title']}")
         except Exception as e:
-            logger.warning(f"Telegram upload failed: {e}")
-        
-        # Always store locally as backup
-        try:
-            media_info_with_query = extraction_result.copy()
-            media_info_with_query['original_query'] = query
-            media_info_with_query['file_type'] = format_type
-            
-            storage_result = local_storage.store_media(
-                extraction_result['file_path'],
-                media_info_with_query
-            )
-            logger.info(f"Local storage successful for: {extraction_result['title']}")
-        except Exception as e:
-            logger.error(f"Local storage failed: {e}")
+            logger.error(f"Telegram upload failed: {e}")
         
         # Cleanup temp file after storing
         cleanup_temp_file(extraction_result['file_path'])
@@ -251,25 +191,20 @@ def extract_media():
             'query': query
         }
         
-        # Add storage information
+        # Add Telegram storage information
         if upload_result:
             response_data.update({
                 'file_id': upload_result['file_id'],
                 'file_unique_id': upload_result['file_unique_id'],
                 'telegram_message_id': upload_result['message_id'],
-                'cached_to_telegram': True
-            })
-        
-        if storage_result:
-            response_data.update({
-                'stored_path': storage_result['stored_path'],
-                'download_url': f"/api/v1/download/{os.path.basename(storage_result['stored_path'])}",
-                'locally_stored': True
+                'uploaded_to_telegram': True,
+                'stream_url': upload_result.get('stream_url', ''),
+                'locally_stored': False  # No local storage in Telegram-first architecture
             })
         
         response_data.update({
             'file_type': format_type,
-            'ready_for_download': bool(storage_result or upload_result)
+            'ready_for_download': bool(upload_result)
         })
         
         return jsonify({
